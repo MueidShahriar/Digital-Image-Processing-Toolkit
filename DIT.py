@@ -3,16 +3,23 @@ from tkinter import filedialog, ttk
 from PIL import Image, ImageTk
 import numpy as np
 import matplotlib.pyplot as plt
+import threading
+from numpy.lib.stride_tricks import sliding_window_view
 import sys
+import os
 
-DEVELOPER_NAME = "MD. MUEID SHAHRIAR"
-DEVELOPER_ID = "0812220205101016"
-DEVELOPER_PHOTO_PATH = "mueid.jpg" 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        base_path = sys._MEIPASS  # For PyInstaller
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 # CORE IMAGE PROCESSING ALGORITHMS (Manual Implementations) 
 def convert_to_grayscale(img_array):
     if img_array.ndim == 3 and img_array.shape[2] >= 3:
-        # Standard Luminosity (Weights: R=0.299, G=0.587, B=0.114)
         grayscale_array = (
             0.299 * img_array[:, :, 0] +
             0.587 * img_array[:, :, 1] +
@@ -25,25 +32,16 @@ def apply_convolution(image_array, kernel):
     if image_array.ndim == 3:
         image_array = convert_to_grayscale(image_array)
 
-    M, N = image_array.shape
+    kernel = np.asarray(kernel, dtype=np.float32)
     kH, kW = kernel.shape
-    
     pad_h = kH // 2
     pad_w = kW // 2
-    
+
     padded_image = np.pad(image_array, ((pad_h, pad_h), (pad_w, pad_w)), mode='reflect')
-    output_array = np.zeros_like(image_array, dtype=float)
+    windows = sliding_window_view(padded_image, (kH, kW))
+    convolved = np.tensordot(windows, kernel[::-1, ::-1], axes=((2, 3), (0, 1)))
 
-    # Manual Convolution Loop
-    for i in range(M):
-        for j in range(N):
-            roi = padded_image[i:i + kH, j:j + kW]
-            convolution_sum = np.sum(roi * kernel)
-            output_array[i, j] = convolution_sum
-
-    # Clamp the values to the valid range [0, 255] and convert to uint8
-    output_array = np.clip(output_array, 0, 255).astype(np.uint8)
-    return output_array
+    return np.clip(convolved, 0, 255).astype(np.uint8)
 
 # SPECIFIC OPERATOR FUNCTIONS
 def image_negative(img_array):
@@ -149,6 +147,7 @@ class ImageProcessorApp:
         self.original_img = None
         self.processed_img = None
         self.current_filepath = ""
+        self.is_processing = False
 
         # State Variables for Parameters
         self.smoothing_kernel_size = tk.StringVar(value="3")
@@ -157,6 +156,14 @@ class ImageProcessorApp:
         self.gamma_value = tk.StringVar(value="0.5")
         self.resize_width = tk.StringVar(value="256")
         self.resize_height = tk.StringVar(value="256")
+        
+        self.panel_max_width = 420
+        self.panel_max_height = 420
+
+        # Define developer info variables inside the class
+        self.DEVELOPER_NAME = "MD. MUEID SHAHRIAR"
+        self.DEVELOPER_ID = "0812220205101016"
+        self.DEVELOPER_PHOTO_PATH = resource_path("mueid.jpg")
         
         self.setup_ui()
         
@@ -169,7 +176,7 @@ class ImageProcessorApp:
         main_frame.grid_columnconfigure(0, weight=0)
         main_frame.grid_columnconfigure(1, weight=1)
 
-        # Developer Info Panel (Left Column)
+        # Developer Info Panel 
         dev_frame = tk.Frame(main_frame, bd=1, relief=tk.RIDGE, bg="#114C67")
         dev_frame.grid(row=0, column=0, rowspan=3, padx=(0, 15), pady=5, sticky="nsw")
         dev_frame.grid_rowconfigure(0, weight=1)
@@ -182,7 +189,7 @@ class ImageProcessorApp:
 
         try:
             # Load developer photo 
-            dev_photo_pil = Image.open(DEVELOPER_PHOTO_PATH).resize((70, 90), Image.Resampling.LANCZOS)
+            dev_photo_pil = Image.open(self.DEVELOPER_PHOTO_PATH).resize((70, 90), Image.Resampling.LANCZOS)
             self.dev_photo_tk = ImageTk.PhotoImage(dev_photo_pil)
             photo_label = tk.Label(card_body, image=self.dev_photo_tk, bd=0, bg="#F3E6D6")
             photo_label.pack(pady=(0, 6))
@@ -194,8 +201,8 @@ class ImageProcessorApp:
             photo_label = tk.Label(card_body, text="[Photo Error]", width=12, height=6, bg="#D8C8B8", fg="#6D5A4B", bd=1, relief=tk.GROOVE)
             photo_label.pack(pady=(0, 6))
 
-        tk.Label(card_body, text=DEVELOPER_NAME, font=('Inter', 10, 'bold'), bg="#114C67", fg="#FFFFFF").pack()
-        tk.Label(card_body, text=DEVELOPER_ID, font=('Inter', 9), bg="#114C67", fg="#FFFFFF").pack(pady=(2, 0))
+        tk.Label(card_body, text=self.DEVELOPER_NAME, font=('Inter', 10, 'bold'), bg="#114C67", fg="#FFFFFF").pack()
+        tk.Label(card_body, text=self.DEVELOPER_ID, font=('Inter', 9), bg="#114C67", fg="#FFFFFF").pack(pady=(2, 0))
         ttk.Separator(card_body, orient="horizontal").pack(fill="x", pady=8)
 
         # Content Column 
@@ -203,6 +210,7 @@ class ImageProcessorApp:
         right_frame.grid(row=0, column=1, rowspan=3, sticky="nsew")
         right_frame.grid_rowconfigure(0, weight=1)
         right_frame.grid_rowconfigure(1, weight=0)
+        right_frame.grid_rowconfigure(2, weight=0)
         right_frame.grid_columnconfigure(0, weight=1)
         
         # Image Display Frame 
@@ -211,25 +219,37 @@ class ImageProcessorApp:
         image_frame.grid_columnconfigure(0, weight=1)
         image_frame.grid_columnconfigure(1, weight=1)
         
-        # Original Image Panel
         tk.Label(image_frame, text="Original Image", font=('Inter', 12, 'bold'), bg="#FDFBF7").grid(row=0, column=0, padx=5, pady=5)
-        self.original_panel = tk.Label(image_frame, text="Load an image...", width=40, height=25, bg='#EAEAEA', relief=tk.SUNKEN)
-        self.original_panel.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+        self.original_container = tk.Frame(image_frame, width=self.panel_max_width, height=self.panel_max_height, bg='#EAEAEA', relief=tk.SUNKEN, bd=1)
+        self.original_container.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
+        self.original_container.grid_propagate(False)
+        self.original_panel = tk.Label(self.original_container, text="Load an image...", bg='#EAEAEA', anchor='center')
+        self.original_panel.pack(expand=True, fill='both')
         
-        # Processed Image Panel
         tk.Label(image_frame, text="Processed Image", font=('Inter', 12, 'bold'), bg="#FDFBF7").grid(row=0, column=1, padx=5, pady=5)
-        self.processed_panel = tk.Label(image_frame, text="Run an operation...", width=40, height=25, bg='#EAEAEA', relief=tk.SUNKEN)
-        self.processed_panel.grid(row=1, column=1, padx=10, pady=5, sticky="nsew")
+        self.processed_container = tk.Frame(image_frame, width=self.panel_max_width, height=self.panel_max_height, bg='#EAEAEA', relief=tk.SUNKEN, bd=1)
+        self.processed_container.grid(row=1, column=1, padx=10, pady=5, sticky="nsew")
+        self.processed_container.grid_propagate(False)
+        self.processed_panel = tk.Label(self.processed_container, text="Run an operation...", bg='#EAEAEA', anchor='center')
+        self.processed_panel.pack(expand=True, fill='both')
 
-        # Control Panel (Bottom) 
+        status_frame = tk.Frame(right_frame, bg="#FDFBF7")
+        status_frame.grid(row=2, column=0, sticky="ew", pady=(0, 5))
+        self.status_var = tk.StringVar(value="Ready")
+        tk.Label(status_frame, textvariable=self.status_var, font=('Inter', 9), bg="#FDFBF7", fg="#444").grid(row=0, column=0, padx=5, pady=3, sticky='w')
+        self.progress = ttk.Progressbar(status_frame, mode="indeterminate", length=180)
+        self.progress.grid(row=0, column=1, padx=5, pady=3, sticky='e')
+        self.progress.grid_remove()
+
+        # Control Panel
         control_frame = tk.Frame(right_frame, bd=2, relief=tk.FLAT, bg="#FFFFFF", padx=10, pady=10)
         control_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
 
         # Function to create buttons with consistent styling
         def create_button(text, command, color):
             return tk.Button(control_frame, text=text, command=command, bg=color, fg="white", 
-                             font=('Inter', 10, 'bold'), relief=tk.FLAT, padx=10, pady=5, 
-                             activebackground=color, activeforeground="white")
+                            font=('Inter', 10, 'bold'), relief=tk.FLAT, padx=10, pady=5, 
+                            activebackground=color, activeforeground="white")
         
         # Button layout setup
         btn_row = 0
@@ -274,6 +294,11 @@ class ImageProcessorApp:
         tk.Entry(control_frame, textvariable=self.resize_height, width=5).grid(row=param_row, column=1, padx=(30, 0), sticky='w')
         create_button("Apply Resize", self.run_resize, "#331764").grid(row=param_row, column=2, padx=5, pady=5, sticky='ew')
 
+    def clear_processed_panel(self):
+        self.processed_panel.config(image="", text="Run an operation...")
+        self.processed_panel.image = None
+        self.processed_img = None
+
     def load_image(self):
         f_types = [('Image Files', '*.png;*.jpg;*.jpeg;*.bmp')]
         filepath = filedialog.askopenfilename(filetypes=f_types)
@@ -281,9 +306,9 @@ class ImageProcessorApp:
             try:
                 self.current_filepath = filepath
                 self.original_img = Image.open(filepath).convert('RGB')
-                self.processed_img = self.original_img.copy() 
+                self.processed_img = None
                 self.update_display(self.original_img, self.original_panel, is_original=True)
-                self.update_display(self.processed_img, self.processed_panel, is_original=False)
+                self.clear_processed_panel()
             except Exception as e:
                 print(f"Error loading image: {e}")
                 
@@ -314,64 +339,97 @@ class ImageProcessorApp:
                 print(f"Error saving image: {e}")
 
     def update_display(self, img, panel, is_original):
-        max_width = panel.winfo_width() if panel.winfo_width() > 1 else 350
-        max_height = panel.winfo_height() if panel.winfo_height() > 1 else 350
+        max_width = self.panel_max_width
+        max_height = self.panel_max_height
 
         w, h = img.size
-        
-        # Calculate scale factor to fit within display area
-        scale_w = max_width / w
-        scale_h = max_height / h
-        scale = min(scale_w, scale_h)
-
-        display_w = int(w * scale * 0.95)
-        display_h = int(h * scale * 0.95)
+        scale = min(max_width / w, max_height / h)
+        display_w = max(1, int(w * scale))
+        display_h = max(1, int(h * scale))
         
         resized_img = img.resize((display_w, display_h), Image.Resampling.LANCZOS)
         tk_img = ImageTk.PhotoImage(resized_img)
 
-        panel.config(image=tk_img, width=display_w, height=display_h, text="")
-        panel.image = tk_img 
+        panel.config(image=tk_img, text="")
+        panel.image = tk_img
+
+    def show_loader(self, message):
+        self.status_var.set(message)
+        self.progress.grid()
+        self.progress.start(10)
+        self.master.config(cursor="watch")
+        self.master.update_idletasks()
+        self.is_processing = True
+
+    def hide_loader(self):
+        self.progress.stop()
+        self.progress.grid_remove()
+        self.master.config(cursor="")
+        self.is_processing = False
+
+    def _complete_operation(self, image, operation_name):
+        self.processed_img = image
+        self.update_display(self.processed_img, self.processed_panel, is_original=False)
+        self.status_var.set(f"{operation_name} completed.")
+
+    def _handle_error(self, message):
+        print(message)
+        self.status_var.set(message)
+
+    def _start_background_task(self, worker, message):
+        if self.is_processing:
+            print("Another operation is already running. Please wait.")
+            return False
+        self.show_loader(message)
+        threading.Thread(target=worker, daemon=True).start()
+        return True
+
+    def _run_operation_worker(self, operation_func, operation_name, kwargs):
+        try:
+            source_img = self.processed_img if self.processed_img is not None else self.original_img
+            img_array = np.array(source_img)
+            result = operation_func(img_array, **kwargs)
+            if isinstance(result, Image.Image):
+                output_image = result
+            elif result.ndim == 3 and result.shape[2] == 3:
+                output_image = Image.fromarray(result.astype(np.uint8), 'RGB')
+            else:
+                output_image = Image.fromarray(result.astype(np.uint8)).convert('L')
+            self.master.after(0, lambda: self._complete_operation(output_image, operation_name))
+        except ValueError as err:
+            self.master.after(0, lambda e=err: self._handle_error(f"Error: {e}"))
+        except Exception as exc:
+            self.master.after(0, lambda ex=exc: self._handle_error(f"Error during {operation_name}: {ex}"))
+        finally:
+            self.master.after(0, self.hide_loader)
 
     def run_operation(self, operation_func, operation_name, **kwargs):
-        if self.processed_img is None:
+        if self.original_img is None:
+            print("Please load an image first.")
+            return
+        self._start_background_task(
+            lambda: self._run_operation_worker(operation_func, operation_name, kwargs),
+            f"{operation_name} in progress..."
+        )
+        
+    def run_resize(self):
+        if self.original_img is None:
             print("Please load an image first.")
             return
 
-        try:
-            print(f"Running: {operation_name} with params: {kwargs}")
-            
-            # Use the currently processed image for the next operation
-            img_array = np.array(self.processed_img) 
-            
-            result_array = operation_func(img_array, **kwargs)
-            
-            # Convert NumPy array back to PIL image
-            if result_array.ndim == 3 and result_array.shape[2] == 3:
-                 self.processed_img = Image.fromarray(result_array, 'RGB')
-            else: 
-                 self.processed_img = Image.fromarray(result_array, 'L')
-                 
-            self.update_display(self.processed_img, self.processed_panel, is_original=False)
-            
-        except ValueError:
-             print(f"Error: Invalid parameter input for {operation_name}. Please check values.")
-        except Exception as e:
-            print(f"Error during {operation_name}: {e}")
-            
-    def run_resize(self):
-        if not self.processed_img:
-            print("Please load an image first.")
-            return
-        
-        try:
-            w = self.resize_width.get()
-            h = self.resize_height.get()
-            
-            self.processed_img = apply_resizing(self.processed_img, w, h)
-            self.update_display(self.processed_img, self.processed_panel, is_original=False)
-        except Exception as e:
-            print(f"Error during resizing: {e}")
+        def resize_worker():
+            try:
+                w = self.resize_width.get()
+                h = self.resize_height.get()
+                base_img = self.processed_img if self.processed_img is not None else self.original_img
+                resized = apply_resizing(base_img, w, h)
+                self.master.after(0, lambda: self._complete_operation(resized, "Resize"))
+            except Exception as e:
+                self.master.after(0, lambda ex=e: self._handle_error(f"Error during resizing: {ex}"))
+            finally:
+                self.master.after(0, self.hide_loader)
+
+        self._start_background_task(resize_worker, "Resizing image...")
 
 if __name__ == "__main__":
     root = tk.Tk()
